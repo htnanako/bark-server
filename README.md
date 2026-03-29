@@ -37,7 +37,15 @@ docker compose up -d
 - 3、Start bark-server: `./bark-server --addr 0.0.0.0:8080 --data ./bark-data`
 - 4、Test the server: `curl localhost:8080/ping`
 
+### Extra APNs Providers
+
+`bark-server` always includes the legacy iOS Bark provider. To add extra apps such as a macOS client, pass `--providers-config /path/to/providers.yaml`.
+
+See [docs/providers.example.yaml](docs/providers.example.yaml) for the config format.
+
 **Note: Bark-server uses the `/data` directory to store data by default. Make sure that bark-server has permission to write to the `/data` directory, otherwise use the `-d` option to change the directory.**
+
+**Note: `serverless` / env mode only supports the legacy single-device iOS behavior and does not load extra providers.**
 
 ### For Developer
 
@@ -69,4 +77,3 @@ Just run the server with `-dsn=user:pass@tcp(mysql_host)/bark`, it will use MySQ
 
 * [API_V2.md](docs/API_V2.md).
 * [MCP.md](docs/MCP.md).
-

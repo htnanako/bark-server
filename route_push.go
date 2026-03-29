@@ -6,10 +6,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/finb/bark-server/v2/database"
 	"github.com/gofiber/fiber/v2/utils"
 
 	"github.com/finb/bark-server/v2/apns"
-
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -256,21 +256,36 @@ func push(params map[string]interface{}) (int, error) {
 		msg.Body = "Empty Message"
 	}
 
-	deviceToken, err := db.DeviceTokenByKey(msg.DeviceKey)
+	device, err := db.DeviceByKey(msg.DeviceKey)
 	if err != nil {
-		return 400, fmt.Errorf("failed to get device token: %v", err)
+		return 400, fmt.Errorf("failed to get device: %v", err)
+	}
+	if device.Status == database.StatusInvalid {
+		return 400, fmt.Errorf("device token invalid, please re-register")
 	}
 
-	msg.DeviceToken = deviceToken
+	provider, err := providerRegistry.ProviderForDevice(device)
+	if err != nil {
+		return 500, fmt.Errorf("failed to resolve provider: %v", err)
+	}
 
-	code, err := apns.Push(&msg)
+	code, err := provider.Provider.Send(&msg, device)
 
-	// Invalid token, delete it from database.
-	if code == 410 || (code == 400 && strings.Contains(err.Error(), "BadDeviceToken")) {
-		_, _ = db.SaveDeviceTokenByKey(msg.DeviceKey, "")
+	if isInvalidTokenResponse(code, err) {
+		device.Status = database.StatusInvalid
+		if _, saveErr := db.SaveDevice(device); saveErr != nil {
+			return 500, fmt.Errorf("push failed: %v; failed to mark device invalid: %v", err, saveErr)
+		}
 	}
 	if err != nil {
 		return 500, fmt.Errorf("push failed: %v", err)
 	}
 	return 200, nil
+}
+
+func isInvalidTokenResponse(code int, err error) bool {
+	if err == nil {
+		return false
+	}
+	return code == 410 || (code == 400 && strings.Contains(err.Error(), "BadDeviceToken"))
 }

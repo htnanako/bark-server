@@ -16,18 +16,33 @@ func (d *EnvBase) CountAll() (int, error) {
 	return 1, nil
 }
 
-func (d *EnvBase) DeviceTokenByKey(key string) (string, error) {
-	if key == os.Getenv("BARK_KEY") {
-		return os.Getenv("BARK_DEVICE_TOKEN"), nil
+func (d *EnvBase) CountByStatus(status string) (int, error) {
+	if status == StatusActive {
+		return 1, nil
 	}
-	return "nil", fmt.Errorf("key not found")
+	return 0, nil
 }
 
-func (d *EnvBase) SaveDeviceTokenByKey(key, token string) (string, error) {
-	if token == os.Getenv("BARK_DEVICE_TOKEN") {
+func (d *EnvBase) DeviceByKey(key string) (*Device, error) {
+	if key == os.Getenv("BARK_KEY") {
+		device := NewLegacyDevice(os.Getenv("BARK_KEY"), os.Getenv("BARK_DEVICE_TOKEN"))
+		return device, nil
+	}
+	return nil, fmt.Errorf("key not found")
+}
+
+func (d *EnvBase) SaveDevice(device *Device) (string, error) {
+	if device == nil {
+		return "", fmt.Errorf("device is nil")
+	}
+	device.NormalizeDefaults()
+	if device.Platform != LegacyIOSPlatform || device.ProviderID != LegacyIOSProviderID || device.AppID != LegacyIOSAppID || device.Topic != LegacyIOSTopic {
+		return "", fmt.Errorf("serverless mode only supports legacy iOS devices")
+	}
+	if device.DeviceToken == os.Getenv("BARK_DEVICE_TOKEN") {
 		return os.Getenv("BARK_KEY"), nil
 	}
-	return "nil", fmt.Errorf("device token is invalid")
+	return "", fmt.Errorf("device token is invalid")
 }
 
 func (d *EnvBase) DeleteDeviceByKey(key string) error {

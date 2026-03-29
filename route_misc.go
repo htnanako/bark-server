@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/finb/bark-server/v2/database"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -32,12 +33,18 @@ func init() {
 		// info func returns information about the server version
 		router.Get("/info", func(c *fiber.Ctx) error {
 			devices, _ := db.CountAll()
+			activeDevices, _ := db.CountByStatus(database.StatusActive)
+			invalidDevices, _ := db.CountByStatus(database.StatusInvalid)
 			return c.JSON(map[string]interface{}{
-				"version": version,
-				"build":   buildDate,
-				"arch":    runtime.GOOS + "/" + runtime.GOARCH,
-				"commit":  commitID,
-				"devices": devices,
+				"version":               version,
+				"build":                 buildDate,
+				"arch":                  runtime.GOOS + "/" + runtime.GOARCH,
+				"commit":                commitID,
+				"devices":               devices,
+				"providers":             providerRegistry.IDs(),
+				"device_schema_version": database.CurrentSchemaVersion,
+				"active_devices":        activeDevices,
+				"invalid_devices":       invalidDevices,
 			})
 		})
 	})

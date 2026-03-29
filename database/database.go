@@ -2,9 +2,10 @@ package database
 
 // Database defines all of the db operation
 type Database interface {
-	CountAll() (int, error)                                 //Get db records count
-	DeviceTokenByKey(key string) (string, error)            //Get specified device's token
-	SaveDeviceTokenByKey(key, token string) (string, error) //Create or update specified devices's token
-	DeleteDeviceByKey(key string) error                     //Delete specified device
-	Close() error                                           //Close the database
+	CountAll() (int, error)                    // Get db records count
+	CountByStatus(status string) (int, error)  // Get db records count by status
+	DeviceByKey(key string) (*Device, error)   // Get specified device
+	SaveDevice(device *Device) (string, error) // Create or update device
+	DeleteDeviceByKey(key string) error        // Delete specified device
+	Close() error                              // Close the database
 }

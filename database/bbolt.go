@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,10 @@ var dbOnce sync.Once
 var db *bbolt.DB
 
 const (
-	bucketName = "device"
+	legacyBucketName = "device"
+	deviceBucketName = "devices_v2"
+	metaBucketName   = "meta"
+	schemaVersionKey = "schema_version"
 )
 
 func NewBboltdb(dataDir string) Database {
@@ -32,7 +36,7 @@ func NewBboltdb(dataDir string) Database {
 func (d *BboltDB) CountAll() (int, error) {
 	var keypairCount int
 	err := db.View(func(tx *bbolt.Tx) error {
-		keypairCount = tx.Bucket([]byte(bucketName)).Stats().KeyN
+		keypairCount = tx.Bucket([]byte(deviceBucketName)).Stats().KeyN
 		return nil
 	})
 
@@ -49,53 +53,83 @@ func (d *BboltDB) Close() error {
 }
 
 // DeviceTokenByKey get device token of specified key
-func (d *BboltDB) DeviceTokenByKey(key string) (string, error) {
-	var token string
+func (d *BboltDB) CountByStatus(status string) (int, error) {
+	count := 0
 	err := db.View(func(tx *bbolt.Tx) error {
-		if bs := tx.Bucket([]byte(bucketName)).Get([]byte(key)); bs == nil {
-			return fmt.Errorf("failed to get [%s] device token from database", key)
-		} else {
-			token = string(bs)
-			if len(token) == 0 {
-				return fmt.Errorf("device token invalid")
+		return tx.Bucket([]byte(deviceBucketName)).ForEach(func(_, v []byte) error {
+			var device Device
+			if err := json.Unmarshal(v, &device); err != nil {
+				return err
+			}
+			if device.Status == status {
+				count++
 			}
 			return nil
-		}
+		})
 	})
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 
-	return token, nil
+	return count, nil
 }
 
-// SaveDeviceToken create or update device token of specified key
-func (d *BboltDB) SaveDeviceTokenByKey(key, deviceToken string) (string, error) {
-	err := db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(bucketName))
+func (d *BboltDB) DeviceByKey(key string) (*Device, error) {
+	var device Device
+	err := db.View(func(tx *bbolt.Tx) error {
+		bs := tx.Bucket([]byte(deviceBucketName)).Get([]byte(key))
+		if bs == nil {
+			return fmt.Errorf("failed to get [%s] device from database", key)
+		}
+		return json.Unmarshal(bs, &device)
+	})
+	if err != nil {
+		return nil, err
+	}
 
-		// If the deviceKey is empty or the corresponding deviceToken cannot be obtained from the database,
-		// it is considered as a new device registration
-		if key == "" || bucket.Get([]byte(key)) == nil {
-			// Generate a new UUID as the deviceKey when a new device register
-			key = shortuuid.New()
+	return &device, nil
+}
+
+// SaveDevice create or update device of specified key
+func (d *BboltDB) SaveDevice(device *Device) (string, error) {
+	device.NormalizeDefaults()
+	err := db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(deviceBucketName))
+
+		if device.DeviceKey != "" {
+			if existing := bucket.Get([]byte(device.DeviceKey)); existing != nil {
+				var existingDevice Device
+				if err := json.Unmarshal(existing, &existingDevice); err != nil {
+					return err
+				}
+				if device.CreatedAt.IsZero() {
+					device.CreatedAt = existingDevice.CreatedAt
+				}
+			}
 		}
 
-		// update the deviceToken
-		return bucket.Put([]byte(key), []byte(deviceToken))
+		if device.DeviceKey == "" || bucket.Get([]byte(device.DeviceKey)) == nil {
+			device.DeviceKey = shortuuid.New()
+		}
+
+		payload, err := json.Marshal(device)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(device.DeviceKey), payload)
 	})
 
 	if err != nil {
 		return "", err
 	}
 
-	return key, nil
+	return device.DeviceKey, nil
 }
 
 // DeleteDeviceByKey delete device of specified key
 func (d *BboltDB) DeleteDeviceByKey(key string) error {
 	err := db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(bucketName))
+		bucket := tx.Bucket([]byte(deviceBucketName))
 		return bucket.Delete([]byte(key))
 	})
 	return err
@@ -118,12 +152,48 @@ func bboltSetup(dataDir string) {
 			logger.Fatalf("failed to create database file(%s): %v", filepath.Join(dataDir, "bark.db"), err)
 		}
 		err = bboltDB.Update(func(tx *bbolt.Tx) error {
-			_, err := tx.CreateBucketIfNotExists([]byte(bucketName))
-			return err
+			if _, err := tx.CreateBucketIfNotExists([]byte(legacyBucketName)); err != nil {
+				return err
+			}
+			if _, err := tx.CreateBucketIfNotExists([]byte(deviceBucketName)); err != nil {
+				return err
+			}
+			if _, err := tx.CreateBucketIfNotExists([]byte(metaBucketName)); err != nil {
+				return err
+			}
+			return migrateLegacyBucket(tx)
 		})
 		if err != nil {
 			logger.Fatalf("failed to create database bucket: %v", err)
 		}
 		db = bboltDB
 	})
+}
+
+func migrateLegacyBucket(tx *bbolt.Tx) error {
+	metaBucket := tx.Bucket([]byte(metaBucketName))
+	if string(metaBucket.Get([]byte(schemaVersionKey))) == fmt.Sprintf("%d", CurrentSchemaVersion) {
+		return nil
+	}
+
+	deviceBucket := tx.Bucket([]byte(deviceBucketName))
+	legacyBucket := tx.Bucket([]byte(legacyBucketName))
+	err := legacyBucket.ForEach(func(k, v []byte) error {
+		if len(k) == 0 || len(v) == 0 {
+			return nil
+		}
+		if deviceBucket.Get(k) != nil {
+			return nil
+		}
+		device := NewLegacyDevice(string(k), string(v))
+		payload, err := json.Marshal(device)
+		if err != nil {
+			return err
+		}
+		return deviceBucket.Put(k, payload)
+	})
+	if err != nil {
+		return err
+	}
+	return metaBucket.Put([]byte(schemaVersionKey), []byte(fmt.Sprintf("%d", CurrentSchemaVersion)))
 }

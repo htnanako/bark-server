@@ -16,6 +16,12 @@ import (
 	"golang.org/x/net/http2"
 )
 
+const (
+	LegacyTopic  = "me.fin.bark"
+	LegacyKeyID  = "LH4T9V5U4R"
+	LegacyTeamID = "5U8LBRXG3A"
+)
+
 type PushMessage struct {
 	Id          string `form:"id,omitempty" json:"id,omitempty" xml:"id,omitempty" query:"id,omitempty"`
 	DeviceToken string `form:"-" json:"-" xml:"-" query:"-"`
@@ -38,28 +44,61 @@ func (p PushMessage) IsDelete() bool {
 	return val == "1" || val == 1 || val == 1.0
 }
 
-const (
-	topic          = "me.fin.bark"
-	keyID          = "LH4T9V5U4R"
-	teamID         = "5U8LBRXG3A"
-	PayloadMaximum = 4096
-)
+const PayloadMaximum = 4096
 
-var clients = make(chan *apns2.Client, 1)
+type Config struct {
+	Topic          string
+	KeyID          string
+	TeamID         string
+	PrivateKey     string
+	Environment    string
+	MaxClientCount int
+}
+
+type Client struct {
+	topic   string
+	clients chan *apns2.Client
+}
+
+var legacyClient *Client
 
 // Initialize APNS client pool
 func init() {
 	ReCreateAPNS(1)
 }
 
+func LegacyConfig(maxClientCount int) Config {
+	return Config{
+		Topic:          LegacyTopic,
+		KeyID:          LegacyKeyID,
+		TeamID:         LegacyTeamID,
+		PrivateKey:     apnsPrivateKey,
+		Environment:    "production",
+		MaxClientCount: maxClientCount,
+	}
+}
+
 func ReCreateAPNS(maxClientCount int) error {
+	client, err := NewClient(LegacyConfig(maxClientCount))
+	if err != nil {
+		return err
+	}
+	legacyClient = client
+	return nil
+}
+
+func NewClient(cfg Config) (*Client, error) {
+	maxClientCount := cfg.MaxClientCount
 	if maxClientCount < 1 {
-		return fmt.Errorf("invalid number of clients")
+		maxClientCount = 1
+	}
+	if cfg.Topic == "" || cfg.KeyID == "" || cfg.TeamID == "" || cfg.PrivateKey == "" {
+		return nil, fmt.Errorf("invalid apns config")
 	}
 
-	authKey, err := token.AuthKeyFromBytes([]byte(apnsPrivateKey))
+	authKey, err := token.AuthKeyFromBytes([]byte(cfg.PrivateKey))
 	if err != nil {
-		logger.Fatalf("failed to create APNS auth key: %v", err)
+		return nil, fmt.Errorf("failed to create APNS auth key: %w", err)
 	}
 
 	var rootCAs *x509.CertPool
@@ -68,7 +107,7 @@ func ReCreateAPNS(maxClientCount int) error {
 	} else {
 		rootCAs, err = x509.SystemCertPool()
 		if err != nil {
-			logger.Fatalf("failed to get rootCAs: %v", err)
+			return nil, fmt.Errorf("failed to get rootCAs: %w", err)
 		}
 	}
 
@@ -76,14 +115,19 @@ func ReCreateAPNS(maxClientCount int) error {
 		rootCAs.AppendCertsFromPEM([]byte(ca))
 	}
 
-	clients = make(chan *apns2.Client, maxClientCount)
+	host := apns2.HostProduction
+	if strings.EqualFold(cfg.Environment, "development") {
+		host = apns2.HostDevelopment
+	}
+
+	clients := make(chan *apns2.Client, maxClientCount)
 
 	for i := 0; i < min(runtime.NumCPU(), maxClientCount); i++ {
 		client := &apns2.Client{
 			Token: &token.Token{
 				AuthKey: authKey,
-				KeyID:   keyID,
-				TeamID:  teamID,
+				KeyID:   cfg.KeyID,
+				TeamID:  cfg.TeamID,
 			},
 			HTTPClient: &http.Client{
 				Transport: &http2.Transport{
@@ -94,17 +138,30 @@ func ReCreateAPNS(maxClientCount int) error {
 				},
 				Timeout: apns2.HTTPClientTimeout,
 			},
-			Host: apns2.HostProduction,
+			Host: host,
 		}
 		logger.Infof("create apns client: %d", i)
 		clients <- client
 	}
 
 	logger.Info("init apns client success...")
-	return nil
+	return &Client{
+		topic:   cfg.Topic,
+		clients: clients,
+	}, nil
 }
 
 func Push(msg *PushMessage) (code int, err error) {
+	if legacyClient == nil {
+		return 500, fmt.Errorf("legacy apns client not initialized")
+	}
+	return legacyClient.Push(msg)
+}
+
+func (c *Client) Push(msg *PushMessage) (code int, err error) {
+	if c == nil {
+		return 500, fmt.Errorf("apns client is nil")
+	}
 	pl := payload.NewPayload().MutableContent()
 	pushType := apns2.PushTypeAlert
 	if msg.IsDelete() {
@@ -129,13 +186,13 @@ func Push(msg *PushMessage) (code int, err error) {
 		pl.Custom(strings.ToLower(k), fmt.Sprintf("%v", v))
 	}
 
-	client := <-clients // grab a client from the pool
-	clients <- client   // add the client back to the pool
+	client := <-c.clients // grab a client from the pool
+	c.clients <- client   // add the client back to the pool
 
 	resp, err := client.Push(&apns2.Notification{
 		CollapseID:  msg.Id,
 		DeviceToken: msg.DeviceToken,
-		Topic:       topic,
+		Topic:       c.topic,
 		Payload:     pl,
 		Expiration:  time.Now().Add(24 * time.Hour),
 		PushType:    pushType,

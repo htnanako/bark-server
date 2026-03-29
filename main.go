@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/finb/bark-server/v2/apns"
 	"github.com/finb/bark-server/v2/database"
 
 	jsoniter "github.com/json-iterator/go"
@@ -50,6 +49,12 @@ func runServer(c *cli.Context) error {
 	fiberApp := createFiberApp(c, network)
 	setupRouter(c, fiberApp)
 	initializeDatabase(c)
+	if c.Bool("serverless") && c.String("providers-config") != "" {
+		return fmt.Errorf("serverless mode does not support providers-config")
+	}
+	if err := initializeProviders(c.String("providers-config")); err != nil {
+		return err
+	}
 	setupGracefulShutdown(fiberApp)
 	return startServer(c, fiberApp, network)
 }
@@ -292,7 +297,13 @@ func getAppFlags() []cli.Flag {
 			Usage:   "Maximum number of APNs client connections",
 			EnvVars: []string{"BARK_SERVER_MAX_APNS_CLIENT_COUNT"},
 			Value:   1,
-			Action:  func(ctx *cli.Context, v int) error { return apns.ReCreateAPNS(v) },
+			Action:  func(ctx *cli.Context, v int) error { SetMaxAPNSClientCount(v); return nil },
+		},
+		&cli.StringFlag{
+			Name:    "providers-config",
+			Usage:   "YAML or JSON config file describing extra APNs providers",
+			EnvVars: []string{"BARK_SERVER_PROVIDERS_CONFIG"},
+			Value:   "",
 		},
 		&cli.IntFlag{
 			Name:    "concurrency",

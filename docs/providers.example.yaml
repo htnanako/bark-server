@@ -1,0 +1,12 @@
+providers:
+  - provider_id: macos_default
+    platform: macos
+    app_id: me.fin.bark.macos
+    topic: me.fin.bark.macos
+    team_id: YOUR_TEAM_ID
+    key_id: YOUR_KEY_ID
+    private_key: |
+      -----BEGIN PRIVATE KEY-----
+      YOUR_PRIVATE_KEY
+      -----END PRIVATE KEY-----
+    environment: production
