@@ -1,11 +1,13 @@
 package database
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/lithammer/shortuuid/v3"
 	"github.com/mritd/logger"
@@ -22,6 +24,7 @@ var db *bbolt.DB
 const (
 	legacyBucketName = "device"
 	deviceBucketName = "devices_v2"
+	notificationBucketName = "notifications_v1"
 	metaBucketName   = "meta"
 	schemaVersionKey = "schema_version"
 )
@@ -105,6 +108,9 @@ func (d *BboltDB) SaveDevice(device *Device) (string, error) {
 				if device.CreatedAt.IsZero() {
 					device.CreatedAt = existingDevice.CreatedAt
 				}
+				if device.StreamToken == "" {
+					device.StreamToken = existingDevice.StreamToken
+				}
 			}
 		}
 
@@ -124,6 +130,75 @@ func (d *BboltDB) SaveDevice(device *Device) (string, error) {
 	}
 
 	return device.DeviceKey, nil
+}
+
+func (d *BboltDB) SaveNotification(event *NotificationEvent) (int64, error) {
+	if event == nil {
+		return 0, fmt.Errorf("notification event is nil")
+	}
+	if event.DeviceKey == "" {
+		return 0, fmt.Errorf("device key is empty")
+	}
+	if event.Event == "" {
+		event.Event = "notification"
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = timeNowUTC()
+	}
+
+	var id int64
+	err := db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(notificationBucketName))
+		seq, err := bucket.NextSequence()
+		if err != nil {
+			return err
+		}
+		event.ID = int64(seq)
+		id = event.ID
+
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+
+		var key [8]byte
+		binary.BigEndian.PutUint64(key[:], seq)
+		return bucket.Put(key[:], payload)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func (d *BboltDB) NotificationsByDeviceSince(deviceKey string, afterID int64, limit int) ([]NotificationEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	events := make([]NotificationEvent, 0, limit)
+	err := db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(notificationBucketName))
+		cursor := bucket.Cursor()
+
+		var startKey [8]byte
+		binary.BigEndian.PutUint64(startKey[:], uint64(afterID+1))
+
+		for k, v := cursor.Seek(startKey[:]); k != nil; k, v = cursor.Next() {
+			var event NotificationEvent
+			if err := json.Unmarshal(v, &event); err != nil {
+				return err
+			}
+			if event.DeviceKey != deviceKey {
+				continue
+			}
+			events = append(events, event)
+			if len(events) >= limit {
+				break
+			}
+		}
+		return nil
+	})
+	return events, err
 }
 
 // DeleteDeviceByKey delete device of specified key
@@ -158,6 +233,9 @@ func bboltSetup(dataDir string) {
 			if _, err := tx.CreateBucketIfNotExists([]byte(deviceBucketName)); err != nil {
 				return err
 			}
+			if _, err := tx.CreateBucketIfNotExists([]byte(notificationBucketName)); err != nil {
+				return err
+			}
 			if _, err := tx.CreateBucketIfNotExists([]byte(metaBucketName)); err != nil {
 				return err
 			}
@@ -169,6 +247,8 @@ func bboltSetup(dataDir string) {
 		db = bboltDB
 	})
 }
+
+func timeNowUTC() time.Time { return time.Now().UTC() }
 
 func migrateLegacyBucket(tx *bbolt.Tx) error {
 	metaBucket := tx.Bucket([]byte(metaBucketName))

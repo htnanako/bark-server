@@ -49,6 +49,14 @@ func (d *EnvBase) DeleteDeviceByKey(key string) error {
 	return fmt.Errorf("not supported")
 }
 
+func (d *EnvBase) SaveNotification(event *NotificationEvent) (int64, error) {
+	return 0, fmt.Errorf("not supported")
+}
+
+func (d *EnvBase) NotificationsByDeviceSince(key string, afterID int64, limit int) ([]NotificationEvent, error) {
+	return nil, fmt.Errorf("not supported")
+}
+
 func (d *EnvBase) Close() error {
 	return nil
 }

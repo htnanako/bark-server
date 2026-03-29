@@ -1,5 +1,12 @@
 providers:
-  - provider_id: macos_default
+  - provider_id: macos_sse
+    delivery: sse
+    platform: macos
+    app_id: me.fin.bark.macos
+    topic: me.fin.bark.macos
+
+  - provider_id: macos_apns
+    delivery: apns
     platform: macos
     app_id: me.fin.bark.macos
     topic: me.fin.bark.macos

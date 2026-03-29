@@ -16,6 +16,7 @@ const legacyProviderID = database.LegacyIOSProviderID
 
 type ProviderConfig struct {
 	ProviderID  string `json:"provider_id" yaml:"provider_id"`
+	Delivery    string `json:"delivery" yaml:"delivery"`
 	Platform    string `json:"platform" yaml:"platform"`
 	AppID       string `json:"app_id" yaml:"app_id"`
 	Topic       string `json:"topic" yaml:"topic"`
@@ -50,6 +51,10 @@ type APNSProvider struct {
 	client *apns.Client
 }
 
+type SSEProvider struct {
+	config ProviderConfig
+}
+
 var (
 	providerRegistry   *ProviderRegistry
 	maxAPNSClientCount = 1
@@ -82,6 +87,12 @@ func initializeProviders(configPath string) error {
 			return err
 		}
 		for _, cfg := range cfgs {
+			if strings.EqualFold(strings.TrimSpace(cfg.Delivery), "sse") {
+				if err := registry.AddSSEProvider(cfg); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := registry.AddAPNSProvider(cfg); err != nil {
 				return err
 			}
@@ -173,17 +184,27 @@ func (r *ProviderRegistry) AddProvider(cfg ProviderConfig, provider PushProvider
 
 func normalizeProviderConfig(cfg ProviderConfig) ProviderConfig {
 	cfg.ProviderID = strings.TrimSpace(cfg.ProviderID)
+	cfg.Delivery = strings.ToLower(strings.TrimSpace(cfg.Delivery))
 	cfg.Platform = strings.ToLower(strings.TrimSpace(cfg.Platform))
 	cfg.AppID = strings.TrimSpace(cfg.AppID)
 	cfg.Topic = strings.TrimSpace(cfg.Topic)
 	cfg.TeamID = strings.TrimSpace(cfg.TeamID)
 	cfg.KeyID = strings.TrimSpace(cfg.KeyID)
 	cfg.PrivateKey = strings.TrimSpace(cfg.PrivateKey)
+	if cfg.Delivery == "" {
+		cfg.Delivery = "apns"
+	}
 	cfg.Environment = strings.ToLower(strings.TrimSpace(cfg.Environment))
 	if cfg.Environment == "" {
 		cfg.Environment = "production"
 	}
 	return cfg
+}
+
+func (r *ProviderRegistry) AddSSEProvider(cfg ProviderConfig) error {
+	cfg = normalizeProviderConfig(cfg)
+	provider := &SSEProvider{config: cfg}
+	return r.AddProvider(cfg, provider)
 }
 
 func defaultProviderKey(platform, appID string) string {
@@ -244,6 +265,12 @@ func (p *APNSProvider) ID() string {
 }
 
 func (p *APNSProvider) ValidateRegistration(device *database.Device) error {
+	if device.DeviceToken == "" {
+		return fmt.Errorf("device token is empty")
+	}
+	if len(device.DeviceToken) > 160 {
+		return fmt.Errorf("device token is invalid")
+	}
 	if device.Platform != p.config.Platform {
 		return fmt.Errorf("platform does not match provider")
 	}
@@ -259,4 +286,53 @@ func (p *APNSProvider) ValidateRegistration(device *database.Device) error {
 func (p *APNSProvider) Send(msg *apns.PushMessage, device *database.Device) (int, error) {
 	msg.DeviceToken = device.DeviceToken
 	return p.client.Push(msg)
+}
+
+func (p *SSEProvider) ID() string {
+	return p.config.ProviderID
+}
+
+func (p *SSEProvider) ValidateRegistration(device *database.Device) error {
+	if device.Platform != p.config.Platform {
+		return fmt.Errorf("platform does not match provider")
+	}
+	if device.AppID != p.config.AppID {
+		return fmt.Errorf("app_id does not match provider")
+	}
+	if device.Topic != p.config.Topic {
+		return fmt.Errorf("topic does not match provider")
+	}
+	return nil
+}
+
+func (p *SSEProvider) Send(msg *apns.PushMessage, device *database.Device) (int, error) {
+	event := database.NotificationEvent{
+		DeviceKey: device.DeviceKey,
+		Event:     "notification",
+		Title:     msg.Title,
+		Subtitle:  msg.Subtitle,
+		Body:      msg.Body,
+		Payload:   clonePayload(msg),
+	}
+	id, err := db.SaveNotification(&event)
+	if err != nil {
+		return 500, err
+	}
+	event.ID = id
+	notificationHub.Publish(event)
+	return 200, nil
+}
+
+func clonePayload(msg *apns.PushMessage) map[string]interface{} {
+	payload := make(map[string]interface{}, len(msg.ExtParams)+6)
+	payload["id"] = msg.Id
+	payload["device_key"] = msg.DeviceKey
+	payload["title"] = msg.Title
+	payload["subtitle"] = msg.Subtitle
+	payload["body"] = msg.Body
+	payload["sound"] = msg.Sound
+	for k, v := range msg.ExtParams {
+		payload[k] = v
+	}
+	return payload
 }

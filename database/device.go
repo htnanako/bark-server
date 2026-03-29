@@ -17,6 +17,7 @@ const (
 type Device struct {
 	DeviceKey        string    `json:"device_key" db:"key"`
 	DeviceToken      string    `json:"device_token" db:"token"`
+	StreamToken      string    `json:"stream_token" db:"stream_token"`
 	Platform         string    `json:"platform" db:"platform"`
 	AppID            string    `json:"app_id" db:"app_id"`
 	ProviderID       string    `json:"provider_id" db:"provider_id"`
@@ -32,6 +33,7 @@ func NewLegacyDevice(key, token string) *Device {
 	return &Device{
 		DeviceKey:        key,
 		DeviceToken:      token,
+		StreamToken:      NewStreamToken(),
 		Platform:         LegacyIOSPlatform,
 		AppID:            LegacyIOSAppID,
 		ProviderID:       LegacyIOSProviderID,
@@ -59,6 +61,9 @@ func (d *Device) NormalizeDefaults() {
 	}
 	if d.Status == "" {
 		d.Status = StatusActive
+	}
+	if d.StreamToken == "" {
+		d.StreamToken = NewStreamToken()
 	}
 	if d.CreatedAt.IsZero() {
 		d.CreatedAt = now

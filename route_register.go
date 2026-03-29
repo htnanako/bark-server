@@ -53,19 +53,6 @@ func doRegister(c *fiber.Ctx, compat bool) error {
 		deviceInfo.DeviceKey = deviceInfo.OldDeviceKey
 	}
 
-	if deviceInfo.DeviceToken == "" {
-		if deviceInfo.OldDeviceToken != "" {
-			deviceInfo.DeviceToken = deviceInfo.OldDeviceToken
-		} else {
-			return c.Status(400).JSON(failed(400, "device token is empty"))
-		}
-	}
-
-	// DeviceToken length is variable, but should not be too long.
-	if len(deviceInfo.DeviceToken) > 160 {
-		return c.Status(400).JSON(failed(400, "device token is invalid"))
-	}
-
 	// if deviceInfo.DeviceKey=="", newKey will be filled with a new uuid
 	// otherwise it equal to deviceInfo.DeviceKey
 	normalizeLegacyFields(&deviceInfo)
@@ -89,6 +76,7 @@ func doRegister(c *fiber.Ctx, compat bool) error {
 		"key":          device.DeviceKey,
 		"device_key":   device.DeviceKey,
 		"device_token": device.DeviceToken,
+		"stream_token": device.StreamToken,
 		"platform":     device.Platform,
 		"app_id":       device.AppID,
 		"provider_id":  device.ProviderID,
@@ -124,13 +112,6 @@ func normalizeLegacyFields(deviceInfo *DeviceInfo) {
 }
 
 func buildRegisteredDevice(deviceInfo *DeviceInfo, compat bool) (*database.Device, error) {
-	if deviceInfo.DeviceToken == "" {
-		return nil, errors.New("device token is empty")
-	}
-	if len(deviceInfo.DeviceToken) > 160 {
-		return nil, errors.New("device token is invalid")
-	}
-
 	isLegacyCompat := compat || isLegacyRegistration(deviceInfo)
 	if isLegacyCompat {
 		deviceInfo.Platform = database.LegacyIOSPlatform
@@ -176,6 +157,7 @@ func buildRegisteredDevice(deviceInfo *DeviceInfo, compat bool) (*database.Devic
 		return nil, errDeviceIdentityConflict
 	}
 	device.CreatedAt = existingDevice.CreatedAt
+	device.StreamToken = existingDevice.StreamToken
 	return device, nil
 }
 

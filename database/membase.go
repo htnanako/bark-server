@@ -6,13 +6,16 @@ import (
 )
 
 type MemBase struct {
-	mu      sync.RWMutex
-	devices map[string]*Device
+	mu            sync.RWMutex
+	devices       map[string]*Device
+	notifications []NotificationEvent
+	nextEventID   int64
 }
 
 func NewMemBase() Database {
 	return &MemBase{
-		devices: map[string]*Device{},
+		devices:       map[string]*Device{},
+		notifications: make([]NotificationEvent, 0),
 	}
 }
 
@@ -68,6 +71,38 @@ func (d *MemBase) DeleteDeviceByKey(key string) error {
 	}
 	delete(d.devices, key)
 	return nil
+}
+
+func (d *MemBase) SaveNotification(event *NotificationEvent) (int64, error) {
+	if event == nil {
+		return 0, fmt.Errorf("notification event is nil")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nextEventID++
+	copy := *event
+	copy.ID = d.nextEventID
+	d.notifications = append(d.notifications, copy)
+	return copy.ID, nil
+}
+
+func (d *MemBase) NotificationsByDeviceSince(key string, afterID int64, limit int) ([]NotificationEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	events := make([]NotificationEvent, 0, limit)
+	for _, item := range d.notifications {
+		if item.DeviceKey != key || item.ID <= afterID {
+			continue
+		}
+		events = append(events, item)
+		if len(events) >= limit {
+			break
+		}
+	}
+	return events, nil
 }
 
 func (d *MemBase) Close() error {

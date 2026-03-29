@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -29,6 +30,19 @@ const (
 		"    PRIMARY KEY (`id`)," +
 		"    UNIQUE KEY `key` (`key`)" +
 		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+	notificationSchema = "" +
+		"CREATE TABLE IF NOT EXISTS `notifications` (" +
+		"    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT," +
+		"    `device_key` VARCHAR(255) NOT NULL," +
+		"    `event` VARCHAR(64) NOT NULL," +
+		"    `title` TEXT NULL," +
+		"    `subtitle` TEXT NULL," +
+		"    `body` MEDIUMTEXT NULL," +
+		"    `payload` JSON NULL," +
+		"    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP," +
+		"    PRIMARY KEY (`id`)," +
+		"    KEY `idx_device_event` (`device_key`, `id`)" +
+		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
 )
 
 func NewMySQL(dsn string) Database {
@@ -41,6 +55,9 @@ func NewMySQL(dsn string) Database {
 	_, err = db.Exec(dbSchema)
 	if err != nil {
 		logger.Fatalf("failed to init database schema(%s): %v", dbSchema, err)
+	}
+	if _, err = db.Exec(notificationSchema); err != nil {
+		logger.Fatalf("failed to init notification schema(%s): %v", notificationSchema, err)
 	}
 	if err = ensureSchema(db); err != nil {
 		logger.Fatalf("failed to upgrade database schema: %v", err)
@@ -112,8 +129,8 @@ func (d *MySQL) CountByStatus(status string) (int, error) {
 
 func (d *MySQL) DeviceByKey(key string) (*Device, error) {
 	device := &Device{}
-	err := mysqlDB.QueryRow("SELECT `key`, `token`, `platform`, `app_id`, `provider_id`, `topic`, `status`, `created_at`, `updated_at`, `last_registered_at` FROM `devices` WHERE `key`=? ", key).
-		Scan(&device.DeviceKey, &device.DeviceToken, &device.Platform, &device.AppID, &device.ProviderID, &device.Topic, &device.Status, &device.CreatedAt, &device.UpdatedAt, &device.LastRegisteredAt)
+	err := mysqlDB.QueryRow("SELECT `key`, `token`, `stream_token`, `platform`, `app_id`, `provider_id`, `topic`, `status`, `created_at`, `updated_at`, `last_registered_at` FROM `devices` WHERE `key`=? ", key).
+		Scan(&device.DeviceKey, &device.DeviceToken, &device.StreamToken, &device.Platform, &device.AppID, &device.ProviderID, &device.Topic, &device.Status, &device.CreatedAt, &device.UpdatedAt, &device.LastRegisteredAt)
 	if err != nil {
 		return nil, err
 	}
@@ -129,10 +146,11 @@ func (d *MySQL) SaveDevice(device *Device) (string, error) {
 
 	now := time.Now().UTC()
 	_, err := mysqlDB.Exec(
-		"INSERT INTO `devices` (`key`,`token`,`platform`,`app_id`,`provider_id`,`topic`,`status`,`created_at`,`updated_at`,`last_registered_at`) VALUES (?,?,?,?,?,?,?,?,?,?) "+
-			"ON DUPLICATE KEY UPDATE `token`=VALUES(`token`), `platform`=VALUES(`platform`), `app_id`=VALUES(`app_id`), `provider_id`=VALUES(`provider_id`), `topic`=VALUES(`topic`), `status`=VALUES(`status`), `updated_at`=VALUES(`updated_at`), `last_registered_at`=VALUES(`last_registered_at`)",
+		"INSERT INTO `devices` (`key`,`token`,`stream_token`,`platform`,`app_id`,`provider_id`,`topic`,`status`,`created_at`,`updated_at`,`last_registered_at`) VALUES (?,?,?,?,?,?,?,?,?,?,?) "+
+			"ON DUPLICATE KEY UPDATE `token`=VALUES(`token`), `stream_token`=VALUES(`stream_token`), `platform`=VALUES(`platform`), `app_id`=VALUES(`app_id`), `provider_id`=VALUES(`provider_id`), `topic`=VALUES(`topic`), `status`=VALUES(`status`), `updated_at`=VALUES(`updated_at`), `last_registered_at`=VALUES(`last_registered_at`)",
 		device.DeviceKey,
 		device.DeviceToken,
+		device.StreamToken,
 		device.Platform,
 		device.AppID,
 		device.ProviderID,
@@ -147,6 +165,80 @@ func (d *MySQL) SaveDevice(device *Device) (string, error) {
 	}
 
 	return device.DeviceKey, nil
+}
+
+func (d *MySQL) SaveNotification(event *NotificationEvent) (int64, error) {
+	if event == nil {
+		return 0, fmt.Errorf("notification event is nil")
+	}
+	if event.DeviceKey == "" {
+		return 0, fmt.Errorf("device key is empty")
+	}
+	if event.Event == "" {
+		event.Event = "notification"
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+
+	payload, err := json.Marshal(event.Payload)
+	if err != nil {
+		return 0, err
+	}
+
+	result, err := mysqlDB.Exec(
+		"INSERT INTO `notifications` (`device_key`,`event`,`title`,`subtitle`,`body`,`payload`,`created_at`) VALUES (?,?,?,?,?,?,?)",
+		event.DeviceKey,
+		event.Event,
+		event.Title,
+		event.Subtitle,
+		event.Body,
+		string(payload),
+		event.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	event.ID = id
+	return id, nil
+}
+
+func (d *MySQL) NotificationsByDeviceSince(deviceKey string, afterID int64, limit int) ([]NotificationEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	rows, err := mysqlDB.Query(
+		"SELECT `id`,`device_key`,`event`,`title`,`subtitle`,`body`,`payload`,`created_at` FROM `notifications` WHERE `device_key`=? AND `id`>? ORDER BY `id` ASC LIMIT ?",
+		deviceKey,
+		afterID,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]NotificationEvent, 0, limit)
+	for rows.Next() {
+		var event NotificationEvent
+		var payloadText sql.NullString
+		if err := rows.Scan(&event.ID, &event.DeviceKey, &event.Event, &event.Title, &event.Subtitle, &event.Body, &payloadText, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		if payloadText.Valid && payloadText.String != "" {
+			if err := json.Unmarshal([]byte(payloadText.String), &event.Payload); err != nil {
+				return nil, err
+			}
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func (d *MySQL) DeleteDeviceByKey(key string) error {
@@ -164,6 +256,7 @@ func ensureSchema(db *sql.DB) error {
 		stmt string
 	}{
 		{name: "platform", stmt: "ALTER TABLE `devices` ADD COLUMN `platform` VARCHAR(32) NOT NULL DEFAULT 'ios' AFTER `token`"},
+		{name: "stream_token", stmt: "ALTER TABLE `devices` ADD COLUMN `stream_token` VARCHAR(255) NOT NULL DEFAULT '' AFTER `token`"},
 		{name: "app_id", stmt: "ALTER TABLE `devices` ADD COLUMN `app_id` VARCHAR(255) NOT NULL DEFAULT 'me.fin.bark' AFTER `platform`"},
 		{name: "provider_id", stmt: "ALTER TABLE `devices` ADD COLUMN `provider_id` VARCHAR(255) NOT NULL DEFAULT 'ios_legacy' AFTER `app_id`"},
 		{name: "topic", stmt: "ALTER TABLE `devices` ADD COLUMN `topic` VARCHAR(255) NOT NULL DEFAULT 'me.fin.bark' AFTER `provider_id`"},
