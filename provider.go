@@ -14,6 +14,11 @@ import (
 
 const legacyProviderID = database.LegacyIOSProviderID
 
+const (
+	defaultMacOSSSEProviderID = "macos_sse"
+	defaultMacOSAppID         = "me.fin.bark.macos"
+)
+
 type ProviderConfig struct {
 	ProviderID  string `json:"provider_id" yaml:"provider_id"`
 	Delivery    string `json:"delivery" yaml:"delivery"`
@@ -75,6 +80,7 @@ func SetMaxAPNSClientCount(count int) {
 
 func initializeProviders(configPath string) error {
 	registry := NewProviderRegistry()
+	cfgs := []ProviderConfig{}
 
 	legacy := legacyProviderConfig()
 	if err := registry.AddAPNSProvider(legacy); err != nil {
@@ -82,20 +88,28 @@ func initializeProviders(configPath string) error {
 	}
 
 	if configPath != "" {
-		cfgs, err := loadProviderConfigs(configPath)
+		loaded, err := loadProviderConfigs(configPath)
 		if err != nil {
 			return err
 		}
-		for _, cfg := range cfgs {
-			if strings.EqualFold(strings.TrimSpace(cfg.Delivery), "sse") {
-				if err := registry.AddSSEProvider(cfg); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := registry.AddAPNSProvider(cfg); err != nil {
+		cfgs = loaded
+	}
+
+	if !hasProviderID(cfgs, defaultMacOSSSEProviderID) {
+		if err := registry.AddSSEProvider(defaultMacOSSSEProviderConfig()); err != nil {
+			return err
+		}
+	}
+
+	for _, cfg := range cfgs {
+		if strings.EqualFold(strings.TrimSpace(cfg.Delivery), "sse") {
+			if err := registry.AddSSEProvider(cfg); err != nil {
 				return err
 			}
+			continue
+		}
+		if err := registry.AddAPNSProvider(cfg); err != nil {
+			return err
 		}
 	}
 
@@ -131,6 +145,25 @@ func legacyProviderConfig() ProviderConfig {
 	}
 }
 
+func defaultMacOSSSEProviderConfig() ProviderConfig {
+	return ProviderConfig{
+		ProviderID: defaultMacOSSSEProviderID,
+		Delivery:   "sse",
+		Platform:   "macos",
+		AppID:      defaultMacOSAppID,
+		Topic:      defaultMacOSAppID,
+	}
+}
+
+func hasProviderID(cfgs []ProviderConfig, providerID string) bool {
+	for _, cfg := range cfgs {
+		if strings.EqualFold(strings.TrimSpace(cfg.ProviderID), providerID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *ProviderRegistry) AddAPNSProvider(cfg ProviderConfig) error {
 	cfg = normalizeProviderConfig(cfg)
 	if cfg.ProviderID == "" || cfg.Platform == "" || cfg.AppID == "" || cfg.Topic == "" {
@@ -138,10 +171,6 @@ func (r *ProviderRegistry) AddAPNSProvider(cfg ProviderConfig) error {
 	}
 	if _, exists := r.byID[cfg.ProviderID]; exists {
 		return fmt.Errorf("duplicate provider_id: %s", cfg.ProviderID)
-	}
-	platformKey := defaultProviderKey(cfg.Platform, cfg.AppID)
-	if _, exists := r.defaultByPlatform[platformKey]; exists {
-		return fmt.Errorf("duplicate default provider for %s/%s", cfg.Platform, cfg.AppID)
 	}
 
 	client, err := apns.NewClient(apns.Config{
@@ -171,14 +200,13 @@ func (r *ProviderRegistry) AddProvider(cfg ProviderConfig, provider PushProvider
 		return fmt.Errorf("duplicate provider_id: %s", cfg.ProviderID)
 	}
 	platformKey := defaultProviderKey(cfg.Platform, cfg.AppID)
-	if _, exists := r.defaultByPlatform[platformKey]; exists {
-		return fmt.Errorf("duplicate default provider for %s/%s", cfg.Platform, cfg.AppID)
-	}
 	r.byID[cfg.ProviderID] = registeredProvider{
 		Config:   cfg,
 		Provider: provider,
 	}
-	r.defaultByPlatform[platformKey] = cfg.ProviderID
+	if _, exists := r.defaultByPlatform[platformKey]; !exists {
+		r.defaultByPlatform[platformKey] = cfg.ProviderID
+	}
 	return nil
 }
 

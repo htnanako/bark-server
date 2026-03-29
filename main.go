@@ -301,7 +301,7 @@ func getAppFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:    "providers-config",
-			Usage:   "YAML or JSON config file describing extra APNs providers",
+			Usage:   "YAML or JSON config file describing extra push providers",
 			EnvVars: []string{"BARK_SERVER_PROVIDERS_CONFIG"},
 			Value:   "",
 		},
@@ -323,14 +323,14 @@ func getAppFlags() []cli.Flag {
 			Name:    "write-timeout",
 			Usage:   "The maximum duration before timing out writes of the response",
 			EnvVars: []string{"BARK_SERVER_WRITE_TIMEOUT"},
-			Value:   3 * time.Second,
+			Value:   0,
 			Hidden:  true,
 		},
 		&cli.DurationFlag{
 			Name:    "idle-timeout",
 			Usage:   "The maximum amount of time to wait for the next request when keep-alive is enabled",
 			EnvVars: []string{"BARK_SERVER_IDLE_TIMEOUT"},
-			Value:   10 * time.Second,
+			Value:   60 * time.Second,
 			Hidden:  true,
 		},
 	}
