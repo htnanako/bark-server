@@ -4,6 +4,12 @@
 
 [Bark](https://github.com/Finb/Bark) is an iOS App which allows you to push customed notifications to your iPhone.
 
+## This Fork
+
+This fork adds support for registering and serving a macOS Bark client while keeping compatibility with the original iOS Bark client.
+
+If you want to use the macOS client with this forked server, see [htnanako/bark-macOS](https://github.com/htnanako/bark-macOS).
+
 ## Installation
 
 ### For Docker User
